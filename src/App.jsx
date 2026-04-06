@@ -542,21 +542,29 @@ export default function SLOGuardian() {
           <div style={{ width: 1, height: 36, background: "rgba(255,255,255,0.08)", margin: "0 4px" }} />
           <button className="mono" onClick={() => dispatch({ type: "RESET" })}
             style={{
-              fontSize: 8, padding: "4px 10px", textTransform: "uppercase",
+              fontSize: 11, padding: "8px 18px", textTransform: "uppercase",
               letterSpacing: "0.08em", cursor: "pointer",
               background: "transparent", border: "1px solid rgba(255,255,255,0.08)",
               color: "#6b7a8d",
             }}>Reset</button>
-          {s.incidentLog.length > 0 && !s.showPostMortem && (
-            <button className="mono" onClick={() => dispatch({ type: "SHOW_POST_MORTEM" })}
-              style={{
-                fontSize: 11, padding: "8px 18px", textTransform: "uppercase",
-                letterSpacing: "0.08em", cursor: "pointer",
-                background: "linear-gradient(135deg, #46f1c5, #00D4AA)",
-                color: "#002118", fontWeight: 700, border: "none",
-                boxShadow: "0 0 12px rgba(70,241,197,0.3)",
-              }}>Post-Mortem</button>
-          )}
+          {(() => {
+            const pmActive = s.incidentLog.length > 0 && !s.showPostMortem;
+            return (
+              <button className="mono"
+                onClick={pmActive ? () => dispatch({ type: "SHOW_POST_MORTEM" }) : undefined}
+                style={{
+                  fontSize: 11, padding: "8px 18px", textTransform: "uppercase",
+                  letterSpacing: "0.08em",
+                  cursor: pmActive ? "pointer" : "default",
+                  background: pmActive ? "linear-gradient(135deg, #46f1c5, #00D4AA)" : "transparent",
+                  color: pmActive ? "#002118" : "rgba(107,122,141,0.4)",
+                  fontWeight: pmActive ? 700 : 400,
+                  border: pmActive ? "none" : "1px solid rgba(255,255,255,0.05)",
+                  boxShadow: pmActive ? "0 0 12px rgba(70,241,197,0.3)" : "none",
+                  transition: "all 0.3s",
+                }}>Post-Mortem</button>
+            );
+          })()}
         </div>
 
         {/* ── MAIN GRID ── */}
