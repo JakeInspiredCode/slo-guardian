@@ -52,6 +52,9 @@ function initState() {
     incidentLog: [],
     burnBuffer: new Array(BUFFER_SIZE).fill(1),
     burnHistory: [{ tick: 0, raw: 1, dampened: 1 }],
+    unmitigatedBurnRate: 1,
+    unmitigatedHistory: [{ tick: 0, value: 1 }],
+    toasts: [],
     sliderErrorRate: 1,
     flappingPhase: 0,
     exhaustionDismissed: false,
@@ -88,6 +91,7 @@ function reducer(s, action) {
     }
     case "START_PRESET": return { ...s, activePreset: action.preset, presetStep: 0, showHint: false };
     case "STOP_PRESET": return { ...s, activePreset: null, presetStep: 0 };
+    case "REMOVE_TOAST": return { ...s, toasts: s.toasts.filter(t => t.id !== action.id) };
     case "RESET": return initState();
     case "TICK": return tickReducer(s);
     default: return s;
@@ -147,6 +151,14 @@ function tickReducer(s) {
   // Burn rate calculation (simulation-tuned: 1%→1x, 15%→4x, 30%→7x, 50%→11x, 80%→17x)
   n.rawBurnRate = Math.max(0.1, 1 + (n.errorRate / 5));
 
+  // Counterfactual: track unmitigated burn rate before operator mitigation
+  n.unmitigatedBurnRate = n.rawBurnRate;
+
+  // Operator mitigation: scaled replicas absorb errors
+  if (n.replicaCount > 3 && n.operatorState >= SEVERITY.WARNING) {
+    n.rawBurnRate = n.rawBurnRate * 0.6;
+  }
+
   // Dampening buffer
   const buf = [...s.burnBuffer];
   buf.shift();
@@ -160,6 +172,7 @@ function tickReducer(s) {
 
   // History
   n.burnHistory = [...s.burnHistory.slice(-(CHART_WINDOW - 1)), { tick: n.tick, raw: n.rawBurnRate, dampened: n.dampenedBurnRate }];
+  n.unmitigatedHistory = [...s.unmitigatedHistory.slice(-(CHART_WINDOW - 1)), { tick: n.tick, value: n.unmitigatedBurnRate }];
 
   // Exhaustion check
   if (n.errorBudgetPct <= 0 && s.operatorState !== SEVERITY.EXHAUSTED) {
@@ -167,6 +180,7 @@ function tickReducer(s) {
     n.exhaustionDismissed = false;
     n.timelineEvents = [...s.timelineEvents, { tick: n.tick, severity: 4, shape: "⬡", msg: "Error budget depleted. CI/CD frozen." }];
     n.incidentLog = [...s.incidentLog, { tick: n.tick, type: "EXHAUSTED" }];
+    n.toasts = [...s.toasts, { id: n.tick, msg: "All deployments frozen", severity: 4 }];
     return n;
   }
   if (s.operatorState === SEVERITY.EXHAUSTED && n.errorBudgetPct <= 0) return n;
@@ -195,18 +209,21 @@ function tickReducer(s) {
     const evts = [...s.timelineEvents];
     const logs = [...s.incidentLog];
 
+    let toastMsg = null;
     if (newState === SEVERITY.NOMINAL && s.operatorState > SEVERITY.NOMINAL) {
       n.replicaCount = 3;
       evts.push({ tick: n.tick, severity: 0, shape: "●", msg: "Recovered. Annotations removed. Replicas: 3." });
       n.recoveryTick = n.tick;
       n.incidentActive = false;
       logs.push({ tick: n.tick, type: "RECOVERED" });
+      toastMsg = "Recovered. Replicas reset to 3.";
     } else if (newState === SEVERITY.CAUTION) {
       n.cooldownRemaining = 10;
       evts.push({ tick: n.tick, severity: 1, shape: "▲", msg: "Burn rate > 2x. Deployment annotated. CI/CD gated." });
       if (!n.incidentActive) { n.incidentActive = true; n.incidentStartTick = n.tick; }
       if (!n.firstActionTick) n.firstActionTick = n.tick;
       logs.push({ tick: n.tick, type: "ANNOTATED" });
+      toastMsg = "Deployment annotated. CI/CD gated.";
     } else if (newState === SEVERITY.WARNING) {
       n.replicaCount = 5;
       n.cooldownRemaining = 15;
@@ -214,15 +231,20 @@ function tickReducer(s) {
       if (!n.incidentActive) { n.incidentActive = true; n.incidentStartTick = n.tick; }
       if (!n.firstActionTick) n.firstActionTick = n.tick;
       logs.push({ tick: n.tick, type: "SCALED" });
+      toastMsg = "Scaled replicas 3 → 5";
     } else if (newState === SEVERITY.CRITICAL) {
       n.cooldownRemaining = 20;
       evts.push({ tick: n.tick, severity: 3, shape: "■", msg: "Burn rate > 10x. PagerDuty alert triggered." });
       if (!n.incidentActive) { n.incidentActive = true; n.incidentStartTick = n.tick; }
       if (!n.firstActionTick) n.firstActionTick = n.tick;
       logs.push({ tick: n.tick, type: "PAGED" });
+      toastMsg = "PagerDuty alert triggered";
     }
     n.timelineEvents = evts;
     n.incidentLog = logs;
+    if (toastMsg) {
+      n.toasts = [...s.toasts, { id: n.tick, msg: toastMsg, severity: newState }];
+    }
   } else if (n.flappingEnabled && n.cooldownRemaining === 0 && db >= BURN_THRESHOLDS.CAUTION) {
     // Dampening hold during flapping
     if (!s.timelineEvents.some(e => e.msg.includes("flapping") && e.tick > n.tick - 15)) {
@@ -305,6 +327,15 @@ const CSS = `
   0%, 100% { opacity: 0.7; }
   50% { opacity: 1; }
 }
+@keyframes scale-pop {
+  0% { transform: scale(1); }
+  50% { transform: scale(1.15); }
+  100% { transform: scale(1); }
+}
+@keyframes toast-in {
+  from { opacity: 0; transform: translateY(8px); }
+  to { opacity: 1; transform: translateY(0); }
+}
 
 .scrollbar-hide::-webkit-scrollbar { display: none; }
 .scrollbar-hide { -ms-overflow-style: none; scrollbar-width: none; }
@@ -328,6 +359,7 @@ const severityOf = (br) => {
 export default function SLOGuardian() {
   const [state, dispatch] = useReducer(reducer, null, initState);
   const [showAbout, setShowAbout] = useState(false);
+  const [statusFlash, setStatusFlash] = useState(false);
   const timelineRef = useRef(null);
   const overrideTimer = useRef(null);
 
@@ -347,6 +379,15 @@ export default function SLOGuardian() {
   const s = state;
   const sev = s.operatorState;
   const sevColor = COLORS[sev];
+
+  // Status bar flash on severity transitions
+  useEffect(() => {
+    if (s.tick > 1) {
+      setStatusFlash(true);
+      const t = setTimeout(() => setStatusFlash(false), 1000);
+      return () => clearTimeout(t);
+    }
+  }, [sev]);
   const isHighSev = sev >= SEVERITY.CRITICAL;
   const textPrimary = isHighSev ? "#F5F7FA" : "#e2e2e5";
 
@@ -436,11 +477,12 @@ export default function SLOGuardian() {
         {/* Status message bar */}
         <div style={{
           position: "fixed", top: 48, left: 0, right: 0, height: 28, zIndex: 49,
-          background: `${sevColor}08`, borderBottom: `1px solid ${sevColor}15`,
+          background: statusFlash ? `${sevColor}40` : `${sevColor}08`,
+          borderBottom: `1px solid ${sevColor}15`,
           display: "flex", alignItems: "center", justifyContent: "center",
-          transition: "all 0.5s",
+          transition: "all 0.8s",
         }}>
-          <span className="mono" style={{ fontSize: 10, color: `${sevColor}cc`, letterSpacing: "0.05em" }}>
+          <span className="mono" style={{ fontSize: 11, color: `${sevColor}cc`, letterSpacing: "0.05em" }}>
             {STATUS_MSGS[sev]}
           </span>
         </div>
@@ -598,7 +640,7 @@ export default function SLOGuardian() {
 
             {/* Burn Rate Chart */}
             <div style={{ flex: 1, minHeight: 0, position: "relative" }}>
-              <BurnRateChart history={s.burnHistory} ghost={ghostData} flapping={s.flappingEnabled} />
+              <BurnRateChart history={s.burnHistory} ghost={ghostData} flapping={s.flappingEnabled} unmitigatedHistory={s.unmitigatedHistory} />
             </div>
           </div>
 
@@ -652,11 +694,13 @@ export default function SLOGuardian() {
           </div>
 
           {/* ── FOOTER STATS ── */}
-          <div style={{ gridRow: "3", gridColumn: "1 / -1", display: "grid", gridTemplateColumns: "repeat(5, 1fr)", gap: 12, height: 64 }}>
-            <StatCard label="Replicas" value={s.replicaCount} unit="pods" />
+          <div style={{ gridRow: "3", gridColumn: "1 / -1", display: "grid", gridTemplateColumns: "repeat(6, 1fr)", gap: 12, height: 64 }}>
+            <StatCard label="Replicas" value={s.replicaCount} unit="pods" animateKey={s.replicaCount} color={s.replicaCount > 3 ? COLORS[sev] : undefined} />
             <StatCard label="Error Rate" value={fmt(s.errorRate, 1)} unit="%" color={s.errorRate > 10 ? "#ffb4ab" : undefined} />
             <StatCard label="Active Pods" value={s.podCount} unit={`/ ${s.podMax}`} />
             <StatCard label="Budget" value={fmt(s.errorBudgetPct, 1)} unit="%" color={s.errorBudgetPct < 20 ? "#FF3B5C" : s.errorBudgetPct < 50 ? "#F5A623" : "#46f1c5"} />
+            <StatCard label="CI/CD" value={sev >= SEVERITY.EXHAUSTED ? "FROZEN" : sev >= SEVERITY.CAUTION ? "GATED" : "OPEN"} highlight
+              color={sev >= SEVERITY.EXHAUSTED ? "#FF3B5C" : sev >= SEVERITY.CAUTION ? COLORS[sev] : "#46f1c5"} />
             <StatCard label="Risk State" value={STATE_NAMES[sev]} highlight color={sevColor} />
           </div>
         </main>
@@ -669,6 +713,14 @@ export default function SLOGuardian() {
         {/* ── POST-MORTEM PANEL ── */}
         {s.showPostMortem && postMortem && (
           <PostMortemPanel data={postMortem} state={s} dispatch={dispatch} />
+        )}
+
+        {/* ── OPERATOR TOASTS ── */}
+        {s.toasts.length > 0 && (
+          <div style={{ position: "fixed", bottom: 24, left: "50%", transform: "translateX(-50%)",
+            display: "flex", flexDirection: "column-reverse", gap: 8, zIndex: 100 }}>
+            {s.toasts.map(t => <Toast key={t.id} toast={t} dispatch={dispatch} />)}
+          </div>
         )}
 
         {/* ── ABOUT MODAL ── */}
@@ -767,10 +819,11 @@ function GaugeArc({ budget, burnRate, severity }) {
 }
 
 // ─── BURN RATE CHART ─────────────────────────────────────
-function BurnRateChart({ history, ghost, flapping }) {
+function BurnRateChart({ history, ghost, flapping, unmitigatedHistory }) {
   const w = 800, h = 180;
   const maxY = 20;
   const data = history.slice(-CHART_WINDOW);
+  const unmitData = (unmitigatedHistory || []).slice(-CHART_WINDOW);
   const [hoverIdx, setHoverIdx] = useState(null);
 
   // Determine current line color from latest dampened value
@@ -783,6 +836,7 @@ function BurnRateChart({ history, ghost, flapping }) {
 
   const rawPoints = data.map((d, i) => d.raw != null ? `${toX(i)},${toY(d.raw)}` : null).filter(Boolean);
   const dampPoints = data.map((d, i) => d.dampened != null ? `${toX(i)},${toY(d.dampened)}` : null).filter(Boolean);
+  const unmitPoints = unmitData.map((d, i) => d.value != null ? `${toX(i)},${toY(d.value)}` : null).filter(Boolean);
 
   const thresholds = [
     { y: BURN_THRESHOLDS.CAUTION, label: "Caution 2x", color: "#F5A623" },
@@ -826,10 +880,14 @@ function BurnRateChart({ history, ghost, flapping }) {
 
       {/* Inline legend */}
       <g>
-        <line x1={w - 115} y1={10} x2={w - 95} y2={10} stroke={lineColor} strokeWidth={2} />
-        <text x={w - 92} y={13} fill="#6b7a8d" fontSize="7" fontFamily="'Geist Mono', monospace">BURN RATE</text>
-        <line x1={w - 115} y1={22} x2={w - 95} y2={22} stroke={lineColor} strokeWidth={1.5} strokeDasharray="4,4" />
-        <text x={w - 92} y={25} fill="#6b7a8d" fontSize="7" fontFamily="'Geist Mono', monospace">PROJECTED</text>
+        <line x1={w - 140} y1={10} x2={w - 120} y2={10} stroke={lineColor} strokeWidth={2} />
+        <text x={w - 117} y={13} fill="#6b7a8d" fontSize="7" fontFamily="'Geist Mono', monospace">BURN RATE</text>
+        <line x1={w - 140} y1={22} x2={w - 120} y2={22} stroke={`${lineColor}40`} strokeWidth={1} />
+        <text x={w - 117} y={25} fill="#6b7a8d" fontSize="7" fontFamily="'Geist Mono', monospace">RAW</text>
+        <line x1={w - 140} y1={34} x2={w - 120} y2={34} stroke={lineColor} strokeWidth={1.5} strokeDasharray="4,4" />
+        <text x={w - 117} y={37} fill="#6b7a8d" fontSize="7" fontFamily="'Geist Mono', monospace">PROJECTED</text>
+        <line x1={w - 140} y1={46} x2={w - 120} y2={46} stroke="#FF3B5C" strokeWidth={2} strokeDasharray="6,4" />
+        <text x={w - 117} y={49} fill="#FF3B5C" fontSize="7" fontFamily="'Geist Mono', monospace" opacity={0.8}>WITHOUT OPERATOR</text>
       </g>
 
       {/* Threshold labels */}
@@ -848,6 +906,12 @@ function BurnRateChart({ history, ghost, flapping }) {
           points={`${dampPoints.join(" ")} ${toX(data.length - 1)},${h} ${toX(0)},${h}`}
           fill={`${lineColor}15`}
         />
+      )}
+
+      {/* Counterfactual "Without Operator" line */}
+      {unmitPoints.length > 1 && (
+        <polyline points={unmitPoints.join(" ")} fill="none" stroke="#FF3B5C99" strokeWidth={2}
+          strokeDasharray="6,4" style={{ filter: "drop-shadow(0 0 3px rgba(255,59,92,0.4))" }} />
       )}
 
       {/* Raw line (thin, only during flapping) */}
@@ -1285,7 +1349,30 @@ function SlideToExecute({ armed, onArm, onExecute, label }) {
 }
 
 // ─── STAT CARD ──────────────────────────────────────────
-function StatCard({ label, value, unit, color, highlight }) {
+function Toast({ toast: t, dispatch }) {
+  const [visible, setVisible] = useState(true);
+  useEffect(() => {
+    const fadeTimer = setTimeout(() => setVisible(false), 3500);
+    const removeTimer = setTimeout(() => dispatch({ type: "REMOVE_TOAST", id: t.id }), 4000);
+    return () => { clearTimeout(fadeTimer); clearTimeout(removeTimer); };
+  }, [t.id, dispatch]);
+  const color = COLORS[t.severity] || "#46f1c5";
+  return (
+    <div style={{
+      background: `${color}20`, borderLeft: `3px solid ${color}`,
+      padding: "10px 16px", fontFamily: "'Geist Mono', monospace", fontSize: 11,
+      color: "#e2e2e5", maxWidth: 500, backdropFilter: "blur(8px)",
+      opacity: visible ? 1 : 0, transition: "opacity 0.5s",
+      animation: "toast-in 0.3s ease",
+    }}>
+      <span style={{ color, marginRight: 8 }}>{SHAPES[t.severity]}</span>
+      <span style={{ color: "#6b7a8d", marginRight: 6 }}>OPERATOR ACTION:</span>
+      {t.msg}
+    </div>
+  );
+}
+
+function StatCard({ label, value, unit, color, highlight, animateKey }) {
   return (
     <div className="glass" style={{
       padding: "8px 12px", display: "flex", flexDirection: "column", justifyContent: "space-between",
@@ -1296,7 +1383,10 @@ function StatCard({ label, value, unit, color, highlight }) {
         {label}
       </span>
       <div style={{ display: "flex", alignItems: "baseline", gap: 4 }}>
-        <span className="mono" style={{ fontSize: 18, color: color || "#e2e2e5", fontWeight: highlight ? 700 : 400 }}>
+        <span key={animateKey} className="mono" style={{
+          fontSize: 18, color: color || "#e2e2e5", fontWeight: highlight ? 700 : 400,
+          animation: animateKey ? "scale-pop 0.5s ease" : undefined, display: "inline-block",
+        }}>
           {value}
         </span>
         {unit && <span className="mono" style={{ fontSize: 8, color: "#6b7a8d", textTransform: "uppercase" }}>{unit}</span>}
