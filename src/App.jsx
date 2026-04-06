@@ -90,7 +90,7 @@ function reducer(s, action) {
       return { ...s, errorBudgetPct: 5, operatorState: SEVERITY.CRITICAL, exhaustionDismissed: true, overrideArmed: false, overrideProgress: 0, timelineEvents: [...s.timelineEvents, evt] };
     }
     case "START_PRESET": return { ...s, activePreset: action.preset, presetStep: 0, showHint: false };
-    case "STOP_PRESET": return { ...s, activePreset: null, presetStep: 0 };
+    case "STOP_PRESET": return { ...s, activePreset: null, presetStep: 0, sliderErrorRate: 1, flappingEnabled: false };
     case "REMOVE_TOAST": return { ...s, toasts: s.toasts.filter(t => t.id !== action.id) };
     case "RESET": return initState();
     case "TICK": return tickReducer(s);
