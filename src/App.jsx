@@ -87,6 +87,7 @@ function reducer(s, action) {
       return { ...s, errorBudgetPct: 5, operatorState: SEVERITY.CRITICAL, exhaustionDismissed: true, overrideArmed: false, overrideProgress: 0, timelineEvents: [...s.timelineEvents, evt] };
     }
     case "START_PRESET": return { ...s, activePreset: action.preset, presetStep: 0, showHint: false };
+    case "STOP_PRESET": return { ...s, activePreset: null, presetStep: 0 };
     case "RESET": return initState();
     case "TICK": return tickReducer(s);
     default: return s;
@@ -446,18 +447,18 @@ export default function SLOGuardian() {
 
         {/* ── SCENARIO BAR ── */}
         <div style={{
-          position: "fixed", top: 76, left: 0, right: 0, height: 36, zIndex: 48,
+          position: "fixed", top: 76, left: 0, right: 0, height: 64, zIndex: 48,
           background: "rgba(12,14,16,0.6)", backdropFilter: "blur(8px)",
           borderBottom: "1px solid rgba(255,255,255,0.04)",
-          display: "flex", alignItems: "center", justifyContent: "center", gap: 8,
+          display: "flex", alignItems: "center", justifyContent: "center", gap: 12,
         }}>
-          <span className="mono" style={{ fontSize: 8, color: "#6b7a8d", letterSpacing: "0.1em", textTransform: "uppercase", marginRight: 8 }}>
+          <span className="mono" style={{ fontSize: 12, color: "#6b7a8d", letterSpacing: "0.1em", textTransform: "uppercase", marginRight: 12 }}>
             Failure Scenarios
           </span>
           {[["SLOW_BURN", "Slow Burn"], ["SUDDEN_SPIKE", "Spike"], ["CASCADE", "Cascade"], ["FLAP_STORM", "Flap Storm"]].map(([id, label]) => (
-            <button key={id} className="mono" onClick={() => dispatch({ type: "START_PRESET", preset: id })}
+            <button key={id} className="mono" onClick={() => dispatch(s.activePreset === id ? { type: "STOP_PRESET" } : { type: "START_PRESET", preset: id })}
               style={{
-                fontSize: 8, padding: "4px 10px", textTransform: "uppercase",
+                fontSize: 11, padding: "8px 18px", textTransform: "uppercase",
                 letterSpacing: "0.08em", cursor: "pointer",
                 background: s.activePreset === id ? "rgba(70,241,197,0.1)" : "transparent",
                 border: `1px solid ${s.activePreset === id ? "rgba(70,241,197,0.3)" : "rgba(255,255,255,0.08)"}`,
@@ -465,7 +466,7 @@ export default function SLOGuardian() {
                 transition: "all 0.2s",
               }}>{label}</button>
           ))}
-          <div style={{ width: 1, height: 20, background: "rgba(255,255,255,0.08)", margin: "0 4px" }} />
+          <div style={{ width: 1, height: 36, background: "rgba(255,255,255,0.08)", margin: "0 4px" }} />
           <button className="mono" onClick={() => dispatch({ type: "RESET" })}
             style={{
               fontSize: 8, padding: "4px 10px", textTransform: "uppercase",
@@ -476,7 +477,7 @@ export default function SLOGuardian() {
           {s.incidentLog.length > 0 && !s.showPostMortem && (
             <button className="mono" onClick={() => dispatch({ type: "SHOW_POST_MORTEM" })}
               style={{
-                fontSize: 8, padding: "4px 10px", textTransform: "uppercase",
+                fontSize: 11, padding: "8px 18px", textTransform: "uppercase",
                 letterSpacing: "0.08em", cursor: "pointer",
                 background: "linear-gradient(135deg, #46f1c5, #00D4AA)",
                 color: "#002118", fontWeight: 700, border: "none",
@@ -490,7 +491,7 @@ export default function SLOGuardian() {
           paddingTop: 76, height: "100vh", display: "grid",
           gridTemplateColumns: "30% 1fr",
           gridTemplateRows: "1fr 1fr auto",
-          gap: 12, padding: "118px 12px 12px 12px",
+          gap: 12, padding: "146px 12px 12px 12px",
         }}>
 
           {/* ── [B] ERROR BUDGET GAUGE ── */}
@@ -770,6 +771,7 @@ function BurnRateChart({ history, ghost, flapping }) {
   const w = 800, h = 180;
   const maxY = 20;
   const data = history.slice(-CHART_WINDOW);
+  const [hoverIdx, setHoverIdx] = useState(null);
 
   // Determine current line color from latest dampened value
   const latest = data[data.length - 1];
@@ -801,7 +803,15 @@ function BurnRateChart({ history, ghost, flapping }) {
   }
 
   return (
-    <svg viewBox={`0 0 ${w} ${h}`} style={{ width: "100%", height: "100%" }} preserveAspectRatio="none">
+    <svg viewBox={`0 0 ${w} ${h}`} style={{ width: "100%", height: "100%" }} preserveAspectRatio="none"
+      onMouseMove={(e) => {
+        const rect = e.currentTarget.getBoundingClientRect();
+        const mouseX = ((e.clientX - rect.left) / rect.width) * w;
+        const idx = Math.round((mouseX / w) * (CHART_WINDOW - 1));
+        if (idx >= 0 && idx < data.length) setHoverIdx(idx);
+        else setHoverIdx(null);
+      }}
+      onMouseLeave={() => setHoverIdx(null)}>
       {/* Y-axis labels */}
       {[1, 2, 5, 10, 15].map(v => (
         <text key={`y-${v}`} x={4} y={toY(v) + 3} fill="rgba(255,255,255,0.15)" fontSize="7" fontFamily="'Geist Mono', monospace">
@@ -861,6 +871,37 @@ function BurnRateChart({ history, ghost, flapping }) {
           </text>
         </>
       )}
+
+      {/* Hover crosshair + tooltip */}
+      {hoverIdx !== null && data[hoverIdx]?.dampened != null && (() => {
+        const d = data[hoverIdx];
+        const hx = toX(hoverIdx);
+        const hy = toY(d.dampened);
+        const hSev = severityOf(d.dampened);
+        const flipLeft = hx > w - 160;
+        const tx = flipLeft ? hx - 90 : hx + 8;
+        const ty = Math.max(4, Math.min(hy - 30, h - 60));
+        return (
+          <>
+            <line x1={hx} y1={0} x2={hx} y2={h} stroke="rgba(255,255,255,0.15)" strokeWidth={1} />
+            <circle cx={hx} cy={hy} r={3} fill={lineColor} />
+            <foreignObject x={tx} y={ty} width={85} height={56} style={{ pointerEvents: "none" }}>
+              <div xmlns="http://www.w3.org/1999/xhtml" style={{
+                background: "rgba(12,14,16,0.92)", border: "1px solid rgba(70,241,197,0.15)",
+                padding: "4px 6px", fontFamily: "'Geist Mono', monospace", fontSize: 8,
+                lineHeight: 1.6, color: "#bacac2", backdropFilter: "blur(8px)",
+              }}>
+                <div><span style={{ color: "#6b7a8d" }}>BURN </span><span style={{ color: COLORS[hSev] }}>{d.dampened.toFixed(1)}x</span></div>
+                {d.raw != null && d.raw !== d.dampened && (
+                  <div><span style={{ color: "#6b7a8d" }}>RAW </span>{d.raw.toFixed(1)}x</div>
+                )}
+                <div><span style={{ color: "#6b7a8d" }}>TIME </span>{fmtTime(d.tick)}</div>
+                <div style={{ color: COLORS[hSev], fontSize: 7 }}>{STATE_NAMES[hSev]}</div>
+              </div>
+            </foreignObject>
+          </>
+        );
+      })()}
 
       {/* Time labels */}
       <text x={4} y={h - 2} fill="#6b7a8d" fontSize="8" fontFamily="'Geist Mono', monospace">
