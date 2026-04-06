@@ -916,7 +916,7 @@ function BurnRateChart({ history, ghost, flapping }) {
 
 // ─── ARCHITECTURE DIAGRAM ────────────────────────────────
 function ArchitectureDiagram({ state: s }) {
-  const [yamlOpen, setYamlOpen] = useState(false);
+  const [activePanel, setActivePanel] = useState(null);
   const sev = s.operatorState;
   const online = s.prometheusOnline;
   const nodeColor = (isActive) => isActive ? `rgba(70,241,197,${sev >= 3 ? "0.6" : "0.4"})` : "rgba(255,255,255,0.1)";
@@ -925,11 +925,11 @@ function ArchitectureDiagram({ state: s }) {
 
   const nodes = [
     { id: "crd", x: 50, y: 90, label: "SLOPolicy", w: 80 },
-    { id: "op", x: 200, y: 90, label: "OPERATOR", w: 80, desc: "Reconciliation loop operator" },
-    { id: "prom", x: 200, y: 180, label: "PROMETHEUS", w: 90, dim: !online, desc: "Prometheus metrics source" },
-    { id: "k8s", x: 370, y: 60, label: "K8S_API", w: 75, desc: "Kubernetes API server" },
-    { id: "deploy", x: 370, y: 130, label: "api-server", w: 80, desc: "Target deployment" },
-    { id: "pd", x: 370, y: 195, label: "PAGERDUTY", w: 85, desc: "PagerDuty alerting" },
+    { id: "op", x: 200, y: 90, label: "OPERATOR", w: 80 },
+    { id: "prom", x: 200, y: 180, label: "PROMETHEUS", w: 90, dim: !online },
+    { id: "k8s", x: 370, y: 60, label: "K8S_API", w: 75 },
+    { id: "deploy", x: 370, y: 130, label: "api-server", w: 80 },
+    { id: "pd", x: 370, y: 195, label: "PAGERDUTY", w: 85 },
   ];
 
   const paths = [
@@ -953,10 +953,10 @@ function ArchitectureDiagram({ state: s }) {
         </linearGradient>
       </defs>
 
-      {/* Click-away dismiss for YAML peek */}
-      {yamlOpen && (
+      {/* Click-away dismiss for panels */}
+      {activePanel && (
         <rect x="0" y="0" width="480" height="230" fill="transparent"
-          onClick={() => setYamlOpen(false)} style={{ cursor: "default" }} />
+          onClick={() => setActivePanel(null)} style={{ cursor: "default" }} />
       )}
 
       {/* Connection paths */}
@@ -976,13 +976,12 @@ function ArchitectureDiagram({ state: s }) {
 
       {/* Nodes */}
       {nodes.map(n => (
-        <g key={n.id} style={{ opacity: n.dim ? 0.3 : 1, transition: "opacity 0.5s", cursor: n.id === "crd" ? "pointer" : "default" }}
-          onClick={n.id === "crd" ? () => setYamlOpen(!yamlOpen) : undefined}>
-          {n.desc && <title>{n.desc}</title>}
+        <g key={n.id} style={{ opacity: n.dim ? 0.3 : 1, transition: "opacity 0.5s", cursor: "pointer" }}
+          onClick={() => setActivePanel(activePanel === n.id ? null : n.id)}>
           <rect x={n.x} y={n.y - 18} width={n.w} height={36} rx={18} ry={18}
             fill="rgba(20,25,30,0.85)"
             stroke={n.dim ? "rgba(255,255,255,0.1)" : nodeColor(true)}
-            strokeWidth={n.id === "crd" && yamlOpen ? 2 : 1}
+            strokeWidth={activePanel === n.id ? 2 : 1}
             style={{ filter: n.dim ? "none" : `drop-shadow(0 0 6px ${dotColor}40)` }} />
           <text x={n.x + n.w / 2} y={n.y + 4} fill={n.dim ? "#6b7a8d" : dotColor}
             fontSize="8" fontFamily="'Geist Mono', monospace" fontWeight="700"
@@ -1007,38 +1006,142 @@ function ArchitectureDiagram({ state: s }) {
         </g>
       ))}
 
-      {/* YAML Peek panel */}
-      {yamlOpen && (
-        <foreignObject x="5" y="2" width="185" height="225">
-          <div xmlns="http://www.w3.org/1999/xhtml" style={{
-            background: "rgba(12,14,16,0.92)", backdropFilter: "blur(12px)",
-            border: "1px solid rgba(70,241,197,0.15)", padding: "10px 12px",
-            fontSize: 8, fontFamily: "'Geist Mono', monospace", lineHeight: 1.7,
-            color: "#6b7a8d", maxHeight: 210, overflow: "auto", position: "relative",
-          }}>
-            <button onClick={() => setYamlOpen(false)} style={{
-              position: "absolute", top: 4, right: 8, background: "none", border: "none",
-              color: "#6b7a8d", fontSize: 10, cursor: "pointer", lineHeight: 1, padding: 0,
-            }}>x</button>
-            <div style={{ color: "#46f1c5", marginBottom: 4, fontSize: 9, letterSpacing: "0.1em" }}>spec.responses:</div>
-            <YamlLine label="caution:" indent={1} />
-            <YamlLine label="burnRateThreshold:" value="2.0" indent={2}
-              highlight={sev === SEVERITY.CAUTION} hColor="#F5A623" />
-            <YamlLine label="warning:" indent={1} />
-            <YamlLine label="burnRateThreshold:" value="5.0" indent={2}
-              highlight={sev === SEVERITY.WARNING} hColor="#FF6B35" />
-            <YamlLine label="scaleUpPercent:" value="50" indent={2}
-              highlight={sev === SEVERITY.WARNING} hColor="#FF6B35" />
-            <YamlLine label="maxReplicas:" value="20" indent={2}
-              highlight={sev === SEVERITY.WARNING} hColor="#FF6B35" />
-            <YamlLine label="critical:" indent={1} />
-            <YamlLine label="burnRateThreshold:" value="10.0" indent={2}
-              highlight={sev >= SEVERITY.CRITICAL} hColor="#FF3B5C" />
-            <YamlLine label="pagerdutyServiceKey:" value='"xai-oncall"' indent={2}
-              highlight={sev >= SEVERITY.CRITICAL} hColor="#FF3B5C" />
-          </div>
-        </foreignObject>
-      )}
+      {/* ── Info Panels ── */}
+      {activePanel && (() => {
+        const panelPos = {
+          crd:    { x: 5,   y: 2,   w: 185, h: 195 },
+          op:     { x: 155, y: 2,   w: 200, h: 180 },
+          prom:   { x: 155, y: 70,  w: 200, h: 160 },
+          k8s:    { x: 240, y: 2,   w: 195, h: 170 },
+          deploy: { x: 240, y: 2,   w: 200, h: 175 },
+          pd:     { x: 240, y: 60,  w: 200, h: 165 },
+        };
+        const pos = panelPos[activePanel];
+        if (!pos) return null;
+
+        const panelStyle = {
+          background: "rgba(12,14,16,0.92)", backdropFilter: "blur(12px)",
+          border: "1px solid rgba(70,241,197,0.15)", padding: "10px 12px",
+          fontSize: 8, fontFamily: "'Geist Mono', monospace", lineHeight: 1.7,
+          color: "#6b7a8d", overflow: "auto", position: "relative",
+        };
+        const closeBtn = (
+          <button onClick={() => setActivePanel(null)} style={{
+            position: "absolute", top: 4, right: 8, background: "none", border: "none",
+            color: "#6b7a8d", fontSize: 10, cursor: "pointer", lineHeight: 1, padding: 0,
+          }}>x</button>
+        );
+        const hdr = (text) => (
+          <div style={{ color: dotColor, marginBottom: 4, fontSize: 9, fontWeight: 700, letterSpacing: "0.1em", textTransform: "uppercase" }}>{text}</div>
+        );
+        const row = (k, v, vColor) => (
+          <div><span style={{ color: "#6b7a8d", display: "inline-block", width: 90 }}>{k}</span><span style={{ color: vColor || "#bacac2" }}>{v}</span></div>
+        );
+
+        const pdStatus = sev >= SEVERITY.CRITICAL ? "ALERT FIRED" : s.incidentLog.some(e => e.type === "PAGED") ? "RESOLVED" : "IDLE";
+        const pdColor = sev >= SEVERITY.CRITICAL ? "#FF3B5C" : pdStatus === "RESOLVED" ? "#46f1c5" : "#6b7a8d";
+        const pagedEvent = s.incidentLog.find(e => e.type === "PAGED");
+
+        let panelContent;
+        if (activePanel === "crd") {
+          panelContent = (
+            <>
+              {hdr("spec.responses")}
+              <YamlLine label="caution:" indent={1} />
+              <YamlLine label="burnRateThreshold:" value="2.0" indent={2}
+                highlight={sev === SEVERITY.CAUTION} hColor="#F5A623" />
+              <YamlLine label="warning:" indent={1} />
+              <YamlLine label="burnRateThreshold:" value="5.0" indent={2}
+                highlight={sev === SEVERITY.WARNING} hColor="#FF6B35" />
+              <YamlLine label="scaleUpPercent:" value="50" indent={2}
+                highlight={sev === SEVERITY.WARNING} hColor="#FF6B35" />
+              <YamlLine label="maxReplicas:" value="20" indent={2}
+                highlight={sev === SEVERITY.WARNING} hColor="#FF6B35" />
+              <YamlLine label="critical:" indent={1} />
+              <YamlLine label="burnRateThreshold:" value="10.0" indent={2}
+                highlight={sev >= SEVERITY.CRITICAL} hColor="#FF3B5C" />
+              <YamlLine label="pagerdutyServiceKey:" value='"xai-oncall"' indent={2}
+                highlight={sev >= SEVERITY.CRITICAL} hColor="#FF3B5C" />
+            </>
+          );
+        } else if (activePanel === "op") {
+          panelContent = (
+            <>
+              {hdr("Reconciliation Loop")}
+              {row("State:", STATE_NAMES[sev], COLORS[sev])}
+              {row("Last cycle:", "<1s ago")}
+              {row("Cycle time:", "12ms")}
+              {row("Cooldown:", s.cooldownRemaining > 0 ? `${s.cooldownRemaining}s remaining` : "None", s.cooldownRemaining > 0 ? "#F5A623" : "#bacac2")}
+              {row("Dampened rate:", `${s.dampenedBurnRate.toFixed(1)}x`, COLORS[severityOf(s.dampenedBurnRate)])}
+              {row("Buffer fill:", `${s.burnBuffer.filter(v => v !== 1).length}/${BUFFER_SIZE}`)}
+              {row("Actions:", `${s.incidentLog.length} this session`)}
+            </>
+          );
+        } else if (activePanel === "prom") {
+          panelContent = (
+            <>
+              {hdr("Prometheus Connection")}
+              {row("Endpoint:", "prometheus:9090")}
+              {row("Status:", online ? "CONNECTED" : "UNREACHABLE", online ? "#46f1c5" : "#FF3B5C")}
+              {row("Scrape int:", "15s")}
+              <div style={{ marginTop: 2 }}>
+                <span style={{ color: "#6b7a8d", display: "inline-block", width: 90 }}>Query:</span>
+                <span style={{ color: "#bacac2" }}>rate(http_requests</span>
+              </div>
+              <div style={{ paddingLeft: 90 }}>
+                <span style={{ color: "#bacac2" }}>{`_total{status=~"5.."}[5m])`}</span>
+              </div>
+              {row("Last scrape:", online ? "<1s ago" : "N/A")}
+              {row("Latency:", online ? "4ms" : "---")}
+            </>
+          );
+        } else if (activePanel === "k8s") {
+          panelContent = (
+            <>
+              {hdr("RBAC: slo-guardian-sa")}
+              {row("Namespace:", "production")}
+              <div style={{ height: 4 }} />
+              <div><span style={{ color: "#bacac2" }}>SLOPolicies</span><span style={{ color: "#6b7a8d" }}>  get, watch, list</span></div>
+              <div><span style={{ color: "#bacac2" }}>Deployments</span><span style={{ color: "#6b7a8d" }}>  get, patch</span></div>
+              <div><span style={{ color: "#bacac2" }}>Pods</span><span style={{ color: "#6b7a8d" }}>        get</span></div>
+              <div style={{ height: 4 }} />
+              <div style={{ color: "rgba(255,180,171,0.6)" }}>✗ delete        (not granted)</div>
+              <div style={{ color: "rgba(255,180,171,0.6)" }}>✗ create        (not granted)</div>
+            </>
+          );
+        } else if (activePanel === "deploy") {
+          panelContent = (
+            <>
+              {hdr("Deployment: api-server")}
+              {row("Replicas:", `${s.replicaCount}/${s.replicaCount} ready`)}
+              {s.replicaCount > 3 && <div style={{ paddingLeft: 90, color: "#F5A623", fontSize: 7 }}>(scaled from 3)</div>}
+              {row("Annotation:", `slo-guardian/state: ${STATE_NAMES[sev].toLowerCase()}`, COLORS[sev])}
+              {row("Error rate:", `${s.errorRate.toFixed(1)}%`, s.errorRate > 10 ? "#FF3B5C" : "#bacac2")}
+              {row("SLO target:", "99.9%")}
+              {row("Pod health:", `${s.podCount}/${s.podMax} running`, s.podCount < s.podMax ? "#FF3B5C" : "#46f1c5")}
+            </>
+          );
+        } else if (activePanel === "pd") {
+          panelContent = (
+            <>
+              {hdr("PagerDuty Integration")}
+              {row("Service:", "xai-oncall-****")}
+              {row("Status:", pdStatus, pdColor)}
+              {row("Incident:", pdStatus === "ALERT FIRED" && pagedEvent ? `#INC-${String(pagedEvent.tick).padStart(4, "0")}` : "---")}
+              {row("Escalation:", pdStatus === "ALERT FIRED" ? "L1 on-call notified" : "---")}
+            </>
+          );
+        }
+
+        return (
+          <foreignObject x={pos.x} y={pos.y} width={pos.w} height={pos.h}>
+            <div xmlns="http://www.w3.org/1999/xhtml" style={panelStyle}>
+              {closeBtn}
+              {panelContent}
+            </div>
+          </foreignObject>
+        );
+      })()}
 
       {/* Lock icon during exhaustion */}
       {sev === SEVERITY.EXHAUSTED && (
