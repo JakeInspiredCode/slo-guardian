@@ -53,9 +53,11 @@ function initState() {
     burnBuffer: new Array(BUFFER_SIZE).fill(1),
     burnHistory: [{ tick: 0, raw: 1, dampened: 1 }],
     unmitigatedBurnRate: 1,
+    unmitigatedEscalation: 0,
     dampenedUnmitigated: 1,
     unmitigatedBuffer: new Array(BUFFER_SIZE).fill(1),
     unmitigatedHistory: [{ tick: 0, value: 1 }],
+    actionMarkers: [],
     toasts: [],
     sliderErrorRate: 1,
     flappingPhase: 0,
@@ -153,8 +155,15 @@ function tickReducer(s) {
   // Burn rate calculation (simulation-tuned: 1%→1x, 15%→4x, 30%→7x, 50%→11x, 80%→17x)
   n.rawBurnRate = Math.max(0.1, 1 + (n.errorRate / 5));
 
-  // Counterfactual: track unmitigated burn rate before operator mitigation
-  n.unmitigatedBurnRate = n.rawBurnRate;
+  // Counterfactual: model what happens without operator intervention
+  // When operator is actively mitigating (CAUTION+), the unmitigated scenario
+  // escalates — no scaling, no CI/CD gating, cascade failures compound
+  if (n.operatorState >= SEVERITY.CAUTION) {
+    n.unmitigatedEscalation = Math.min(s.unmitigatedEscalation + 0.15, 8);
+  } else {
+    n.unmitigatedEscalation = Math.max(0, s.unmitigatedEscalation - 0.3);
+  }
+  n.unmitigatedBurnRate = n.rawBurnRate + n.unmitigatedEscalation;
 
   // Operator mitigation: scaled replicas absorb errors
   if (n.replicaCount > 3 && n.operatorState >= SEVERITY.WARNING) {
@@ -253,6 +262,7 @@ function tickReducer(s) {
     n.incidentLog = logs;
     if (toastMsg) {
       n.toasts = [...s.toasts, { id: n.tick, msg: toastMsg, severity: newState }];
+      n.actionMarkers = [...s.actionMarkers, { tick: n.tick, label: toastMsg, severity: newState }];
     }
   } else if (n.flappingEnabled && n.cooldownRemaining === 0 && db >= BURN_THRESHOLDS.CAUTION) {
     // Dampening hold during flapping
@@ -661,7 +671,7 @@ export default function SLOGuardian() {
 
             {/* Burn Rate Chart */}
             <div style={{ flex: 1, minHeight: 0, position: "relative" }}>
-              <BurnRateChart history={s.burnHistory} ghost={ghostData} flapping={s.flappingEnabled} unmitigatedHistory={s.unmitigatedHistory} />
+              <BurnRateChart history={s.burnHistory} ghost={ghostData} flapping={s.flappingEnabled} unmitigatedHistory={s.unmitigatedHistory} actionMarkers={s.actionMarkers} />
             </div>
           </div>
 
@@ -840,7 +850,7 @@ function GaugeArc({ budget, burnRate, severity }) {
 }
 
 // ─── BURN RATE CHART ─────────────────────────────────────
-function BurnRateChart({ history, ghost, flapping, unmitigatedHistory }) {
+function BurnRateChart({ history, ghost, flapping, unmitigatedHistory, actionMarkers = [] }) {
   const w = 800, h = 180;
   const maxY = 20;
   const data = history.slice(-CHART_WINDOW);
@@ -948,6 +958,24 @@ function BurnRateChart({ history, ghost, flapping, unmitigatedHistory }) {
         <polyline points={dampPoints.join(" ")} fill="none" stroke={lineColor} strokeWidth={2}
           style={{ filter: `drop-shadow(0 0 4px ${lineColor}50)`, transition: "stroke 0.5s" }} />
       )}
+
+      {/* Action flags */}
+      {actionMarkers.map(m => {
+        const dataStart = data.length > 0 ? data[0].tick : 0;
+        const idx = m.tick - dataStart;
+        if (idx < 0 || idx >= data.length) return null;
+        const fx = toX(idx);
+        const flagColor = COLORS[m.severity] || "#46f1c5";
+        return (
+          <g key={`flag-${m.tick}`}>
+            <line x1={fx} y1={8} x2={fx} y2={h - 10} stroke={flagColor} strokeWidth={1} strokeDasharray="2,3" opacity={0.5} />
+            <rect x={fx - 1} y={6} width={3} height={3} fill={flagColor} />
+            <text x={fx + 5} y={12} fill={flagColor} fontSize="6" fontFamily="'Geist Mono', monospace" opacity={0.9}>
+              {m.label.length > 24 ? m.label.slice(0, 22) + "…" : m.label}
+            </text>
+          </g>
+        );
+      })}
 
       {/* Ghost projection */}
       {ghostLine && (
