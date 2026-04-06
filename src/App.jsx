@@ -53,6 +53,8 @@ function initState() {
     burnBuffer: new Array(BUFFER_SIZE).fill(1),
     burnHistory: [{ tick: 0, raw: 1, dampened: 1 }],
     unmitigatedBurnRate: 1,
+    dampenedUnmitigated: 1,
+    unmitigatedBuffer: new Array(BUFFER_SIZE).fill(1),
     unmitigatedHistory: [{ tick: 0, value: 1 }],
     toasts: [],
     sliderErrorRate: 1,
@@ -159,12 +161,19 @@ function tickReducer(s) {
     n.rawBurnRate = n.rawBurnRate * 0.6;
   }
 
-  // Dampening buffer
+  // Dampening buffer (mitigated)
   const buf = [...s.burnBuffer];
   buf.shift();
   buf.push(n.rawBurnRate);
   n.burnBuffer = buf;
   n.dampenedBurnRate = buf.reduce((a, b) => a + b, 0) / buf.length;
+
+  // Dampening buffer (unmitigated — parallel, same window)
+  const unmitBuf = [...s.unmitigatedBuffer];
+  unmitBuf.shift();
+  unmitBuf.push(n.unmitigatedBurnRate);
+  n.unmitigatedBuffer = unmitBuf;
+  n.dampenedUnmitigated = unmitBuf.reduce((a, b) => a + b, 0) / unmitBuf.length;
 
   // Budget drain/refill (tuned for 30-60s depletion at WARNING/CRITICAL)
   const drainPerTick = n.rawBurnRate > 1.2 ? (n.rawBurnRate - 1) * 0.3 : -0.05;
@@ -172,7 +181,7 @@ function tickReducer(s) {
 
   // History
   n.burnHistory = [...s.burnHistory.slice(-(CHART_WINDOW - 1)), { tick: n.tick, raw: n.rawBurnRate, dampened: n.dampenedBurnRate }];
-  n.unmitigatedHistory = [...s.unmitigatedHistory.slice(-(CHART_WINDOW - 1)), { tick: n.tick, value: n.unmitigatedBurnRate }];
+  n.unmitigatedHistory = [...s.unmitigatedHistory.slice(-(CHART_WINDOW - 1)), { tick: n.tick, value: n.dampenedUnmitigated }];
 
   // Exhaustion check
   if (n.errorBudgetPct <= 0 && s.operatorState !== SEVERITY.EXHAUSTED) {
@@ -391,16 +400,28 @@ export default function SLOGuardian() {
   const isHighSev = sev >= SEVERITY.CRITICAL;
   const textPrimary = isHighSev ? "#F5F7FA" : "#e2e2e5";
 
-  // Ghost line projection
+  // Ghost line projection (linear regression slope + corrected TTE)
   const ghostData = useMemo(() => {
     const h = s.burnHistory.filter(d => d.dampened != null);
     if (h.length < 5) return null;
     const recent = h.slice(-10);
     const avgRate = recent.reduce((a, b) => a + b.dampened, 0) / recent.length;
     if (avgRate < 1.2) return null;
-    const drainPerSec = (avgRate - 1) * 0.3;
+
+    // Linear regression for slope (rate of change per tick)
+    const rn = recent.length;
+    const sumX = recent.reduce((a, _, i) => a + i, 0);
+    const sumY = recent.reduce((a, d) => a + d.dampened, 0);
+    const sumXY = recent.reduce((a, d, i) => a + i * d.dampened, 0);
+    const sumX2 = recent.reduce((a, _, i) => a + i * i, 0);
+    const slope = (rn * sumXY - sumX * sumY) / (rn * sumX2 - sumX * sumX) || 0;
+
+    const endRate = recent[recent.length - 1].dampened;
+    // TTE uses actual raw burn rate to match tickReducer drain formula
+    const currentRaw = s.burnHistory[s.burnHistory.length - 1]?.raw || 1;
+    const drainPerSec = currentRaw > 1.2 ? (currentRaw - 1) * 0.3 : 0;
     const timeToExhaust = drainPerSec > 0 ? Math.round(s.errorBudgetPct / drainPerSec) : Infinity;
-    return { rate: avgRate, tte: timeToExhaust > 999 ? null : timeToExhaust };
+    return { rate: endRate, slope, tte: timeToExhaust > 999 ? null : timeToExhaust };
   }, [s.burnHistory, s.errorBudgetPct]);
 
   // Post-mortem data
@@ -844,16 +865,19 @@ function BurnRateChart({ history, ghost, flapping, unmitigatedHistory }) {
     { y: BURN_THRESHOLDS.CRITICAL, label: "Critical 10x", color: "#FF3B5C" },
   ];
 
-  // Ghost projection
+  // Ghost projection (angled along regression slope)
   let ghostLine = null;
   let ghostEndX = 0, ghostEndY = 0;
   if (ghost && dampPoints.length > 0) {
     const lastX = toX(data.length - 1);
     const lastY = toY(ghost.rate);
+    const projTicks = CHART_WINDOW * 0.25;
+    const projRate = Math.max(0.1, ghost.rate + (ghost.slope || 0) * projTicks);
     const projX = Math.min(w, lastX + w * 0.25);
-    ghostLine = `M${lastX},${lastY} L${projX},${lastY}`;
+    const projY = toY(projRate);
+    ghostLine = `M${lastX},${lastY} L${projX},${projY}`;
     ghostEndX = projX;
-    ghostEndY = lastY;
+    ghostEndY = projY;
   }
 
   return (
