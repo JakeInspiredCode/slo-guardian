@@ -355,7 +355,7 @@ export default function SLOGuardian() {
     if (h.length < 5) return null;
     const recent = h.slice(-10);
     const avgRate = recent.reduce((a, b) => a + b.dampened, 0) / recent.length;
-    if (avgRate < 1.5) return null;
+    if (avgRate < 1.2) return null;
     const drainPerSec = (avgRate - 1) * 0.3;
     const timeToExhaust = drainPerSec > 0 ? Math.round(s.errorBudgetPct / drainPerSec) : Infinity;
     return { rate: avgRate, tte: timeToExhaust > 999 ? null : timeToExhaust };
@@ -444,12 +444,53 @@ export default function SLOGuardian() {
           </span>
         </div>
 
+        {/* ── SCENARIO BAR ── */}
+        <div style={{
+          position: "fixed", top: 76, left: 0, right: 0, height: 36, zIndex: 48,
+          background: "rgba(12,14,16,0.6)", backdropFilter: "blur(8px)",
+          borderBottom: "1px solid rgba(255,255,255,0.04)",
+          display: "flex", alignItems: "center", justifyContent: "center", gap: 8,
+        }}>
+          <span className="mono" style={{ fontSize: 8, color: "#6b7a8d", letterSpacing: "0.1em", textTransform: "uppercase", marginRight: 8 }}>
+            Failure Scenarios
+          </span>
+          {[["SLOW_BURN", "Slow Burn"], ["SUDDEN_SPIKE", "Spike"], ["CASCADE", "Cascade"], ["FLAP_STORM", "Flap Storm"]].map(([id, label]) => (
+            <button key={id} className="mono" onClick={() => dispatch({ type: "START_PRESET", preset: id })}
+              style={{
+                fontSize: 8, padding: "4px 10px", textTransform: "uppercase",
+                letterSpacing: "0.08em", cursor: "pointer",
+                background: s.activePreset === id ? "rgba(70,241,197,0.1)" : "transparent",
+                border: `1px solid ${s.activePreset === id ? "rgba(70,241,197,0.3)" : "rgba(255,255,255,0.08)"}`,
+                color: s.activePreset === id ? "#46f1c5" : "#6b7a8d",
+                transition: "all 0.2s",
+              }}>{label}</button>
+          ))}
+          <div style={{ width: 1, height: 20, background: "rgba(255,255,255,0.08)", margin: "0 4px" }} />
+          <button className="mono" onClick={() => dispatch({ type: "RESET" })}
+            style={{
+              fontSize: 8, padding: "4px 10px", textTransform: "uppercase",
+              letterSpacing: "0.08em", cursor: "pointer",
+              background: "transparent", border: "1px solid rgba(255,255,255,0.08)",
+              color: "#6b7a8d",
+            }}>Reset</button>
+          {s.incidentLog.length > 0 && !s.showPostMortem && (
+            <button className="mono" onClick={() => dispatch({ type: "SHOW_POST_MORTEM" })}
+              style={{
+                fontSize: 8, padding: "4px 10px", textTransform: "uppercase",
+                letterSpacing: "0.08em", cursor: "pointer",
+                background: "linear-gradient(135deg, #46f1c5, #00D4AA)",
+                color: "#002118", fontWeight: 700, border: "none",
+                boxShadow: "0 0 12px rgba(70,241,197,0.3)",
+              }}>Post-Mortem</button>
+          )}
+        </div>
+
         {/* ── MAIN GRID ── */}
         <main style={{
           paddingTop: 76, height: "100vh", display: "grid",
           gridTemplateColumns: "30% 1fr",
           gridTemplateRows: "1fr 1fr auto",
-          gap: 12, padding: "82px 12px 12px 12px",
+          gap: 12, padding: "118px 12px 12px 12px",
         }}>
 
           {/* ── [B] ERROR BUDGET GAUGE ── */}
@@ -486,17 +527,6 @@ export default function SLOGuardian() {
             </div>
 
             <div style={{ flex: 1, display: "flex", flexDirection: "column", gap: 10, overflowY: "auto" }} className="scrollbar-hide">
-              {/* Initial hint */}
-              {s.showHint && (
-                <div style={{
-                  padding: "8px 12px", textAlign: "center",
-                  background: "rgba(70,241,197,0.05)", border: "1px solid rgba(70,241,197,0.1)",
-                }}>
-                  <span className="mono" style={{ fontSize: 9, color: "#46f1c5", letterSpacing: "0.05em" }}>
-                    Inject a failure to see the operator respond ▸
-                  </span>
-                </div>
-              )}
               <div>
                 <label className="mono" style={{ fontSize: 9, color: "#6b7a8d", textTransform: "uppercase", display: "block", marginBottom: 6 }}>
                   Error Rate: <span style={{ color: COLORS[severityOf(s.rawBurnRate)] }}>{fmt(s.sliderErrorRate, 0)}%</span>
@@ -542,45 +572,6 @@ export default function SLOGuardian() {
                   onExecute={() => dispatch({ type: "KILL_PODS" })}
                   label={`KILL 2 PODS (${s.podCount}/${s.podMax})`}
                 />
-              </div>
-
-              {/* Scenario Presets */}
-              <div>
-                <span className="mono" style={{ fontSize: 8, color: "#6b7a8d", textTransform: "uppercase", letterSpacing: "0.1em", display: "block", marginBottom: 6 }}>Presets</span>
-                <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 6 }}>
-                  {[["SLOW_BURN", "Slow Burn"], ["SUDDEN_SPIKE", "Spike"], ["CASCADE", "Cascade"], ["FLAP_STORM", "Flap Storm"]].map(([id, label]) => (
-                    <button key={id} className="mono" onClick={() => dispatch({ type: "START_PRESET", preset: id })}
-                      style={{
-                        fontSize: 9, padding: "6px 0", textTransform: "uppercase",
-                        letterSpacing: "0.08em", cursor: "pointer",
-                        background: s.activePreset === id ? "rgba(70,241,197,0.1)" : "transparent",
-                        border: `1px solid ${s.activePreset === id ? "rgba(70,241,197,0.3)" : "rgba(255,255,255,0.08)"}`,
-                        color: s.activePreset === id ? "#46f1c5" : "#6b7a8d",
-                        transition: "all 0.2s",
-                      }}>{label}</button>
-                  ))}
-                </div>
-              </div>
-
-              {/* Reset / Post-mortem */}
-              <div style={{ display: "flex", gap: 8 }}>
-                {s.incidentLog.length > 0 && !s.showPostMortem && (
-                  <button className="mono" onClick={() => dispatch({ type: "SHOW_POST_MORTEM" })}
-                    style={{
-                      flex: 1, fontSize: 9, padding: "8px 0", textTransform: "uppercase",
-                      letterSpacing: "0.1em", cursor: "pointer",
-                      background: "linear-gradient(135deg, #46f1c5, #00D4AA)",
-                      color: "#002118", fontWeight: 700, border: "none",
-                      boxShadow: "0 0 12px rgba(70,241,197,0.3)",
-                    }}>Post-Mortem</button>
-                )}
-                <button className="mono" onClick={() => dispatch({ type: "RESET" })}
-                  style={{
-                    flex: 1, fontSize: 9, padding: "8px 0", textTransform: "uppercase",
-                    letterSpacing: "0.1em", cursor: "pointer",
-                    background: "transparent", border: "1px solid rgba(255,255,255,0.1)",
-                    color: "#6b7a8d",
-                  }}>Reset</button>
               </div>
             </div>
           </div>
@@ -799,11 +790,14 @@ function BurnRateChart({ history, ghost, flapping }) {
 
   // Ghost projection
   let ghostLine = null;
+  let ghostEndX = 0, ghostEndY = 0;
   if (ghost && dampPoints.length > 0) {
     const lastX = toX(data.length - 1);
     const lastY = toY(ghost.rate);
     const projX = Math.min(w, lastX + w * 0.25);
     ghostLine = `M${lastX},${lastY} L${projX},${lastY}`;
+    ghostEndX = projX;
+    ghostEndY = lastY;
   }
 
   return (
@@ -819,6 +813,14 @@ function BurnRateChart({ history, ghost, flapping }) {
       {[2, 5, 10].map(v => (
         <line key={v} x1={0} y1={toY(v)} x2={w} y2={toY(v)} stroke="rgba(255,255,255,0.04)" strokeWidth={1} />
       ))}
+
+      {/* Inline legend */}
+      <g>
+        <line x1={w - 115} y1={10} x2={w - 95} y2={10} stroke={lineColor} strokeWidth={2} />
+        <text x={w - 92} y={13} fill="#6b7a8d" fontSize="7" fontFamily="'Geist Mono', monospace">BURN RATE</text>
+        <line x1={w - 115} y1={22} x2={w - 95} y2={22} stroke={lineColor} strokeWidth={1.5} strokeDasharray="4,4" />
+        <text x={w - 92} y={25} fill="#6b7a8d" fontSize="7" fontFamily="'Geist Mono', monospace">PROJECTED</text>
+      </g>
 
       {/* Threshold labels */}
       {thresholds.map(t => (
@@ -851,7 +853,13 @@ function BurnRateChart({ history, ghost, flapping }) {
 
       {/* Ghost projection */}
       {ghostLine && (
-        <path d={ghostLine} fill="none" stroke={`${lineColor}40`} strokeWidth={1} strokeDasharray="4,4" />
+        <>
+          <path d={ghostLine} fill="none" stroke={`${lineColor}99`} strokeWidth={1.5} strokeDasharray="4,4" />
+          <text x={ghostEndX + 4} y={ghostEndY + 3} fill={`${lineColor}80`}
+            fontSize="7" fontFamily="'Geist Mono', monospace">
+            PROJECTED{ghost?.tte ? ` ~${ghost.tte}s` : ""}
+          </text>
+        </>
       )}
 
       {/* Time labels */}
@@ -876,11 +884,11 @@ function ArchitectureDiagram({ state: s }) {
 
   const nodes = [
     { id: "crd", x: 50, y: 90, label: "SLOPolicy", w: 80 },
-    { id: "op", x: 200, y: 90, label: "OPERATOR", w: 80 },
-    { id: "prom", x: 200, y: 180, label: "PROMETHEUS", w: 90, dim: !online },
-    { id: "k8s", x: 370, y: 60, label: "K8S_API", w: 75 },
-    { id: "deploy", x: 370, y: 130, label: "api-server", w: 80 },
-    { id: "pd", x: 370, y: 195, label: "PAGERDUTY", w: 85 },
+    { id: "op", x: 200, y: 90, label: "OPERATOR", w: 80, desc: "Reconciliation loop operator" },
+    { id: "prom", x: 200, y: 180, label: "PROMETHEUS", w: 90, dim: !online, desc: "Prometheus metrics source" },
+    { id: "k8s", x: 370, y: 60, label: "K8S_API", w: 75, desc: "Kubernetes API server" },
+    { id: "deploy", x: 370, y: 130, label: "api-server", w: 80, desc: "Target deployment" },
+    { id: "pd", x: 370, y: 195, label: "PAGERDUTY", w: 85, desc: "PagerDuty alerting" },
   ];
 
   const paths = [
@@ -904,6 +912,12 @@ function ArchitectureDiagram({ state: s }) {
         </linearGradient>
       </defs>
 
+      {/* Click-away dismiss for YAML peek */}
+      {yamlOpen && (
+        <rect x="0" y="0" width="480" height="230" fill="transparent"
+          onClick={() => setYamlOpen(false)} style={{ cursor: "default" }} />
+      )}
+
       {/* Connection paths */}
       {paths.map(p => (
         <g key={p.id}>
@@ -923,6 +937,7 @@ function ArchitectureDiagram({ state: s }) {
       {nodes.map(n => (
         <g key={n.id} style={{ opacity: n.dim ? 0.3 : 1, transition: "opacity 0.5s", cursor: n.id === "crd" ? "pointer" : "default" }}
           onClick={n.id === "crd" ? () => setYamlOpen(!yamlOpen) : undefined}>
+          {n.desc && <title>{n.desc}</title>}
           <rect x={n.x} y={n.y - 18} width={n.w} height={36} rx={18} ry={18}
             fill="rgba(20,25,30,0.85)"
             stroke={n.dim ? "rgba(255,255,255,0.1)" : nodeColor(true)}
@@ -958,8 +973,12 @@ function ArchitectureDiagram({ state: s }) {
             background: "rgba(12,14,16,0.92)", backdropFilter: "blur(12px)",
             border: "1px solid rgba(70,241,197,0.15)", padding: "10px 12px",
             fontSize: 8, fontFamily: "'Geist Mono', monospace", lineHeight: 1.7,
-            color: "#6b7a8d", maxHeight: 210, overflow: "auto",
+            color: "#6b7a8d", maxHeight: 210, overflow: "auto", position: "relative",
           }}>
+            <button onClick={() => setYamlOpen(false)} style={{
+              position: "absolute", top: 4, right: 8, background: "none", border: "none",
+              color: "#6b7a8d", fontSize: 10, cursor: "pointer", lineHeight: 1, padding: 0,
+            }}>x</button>
             <div style={{ color: "#46f1c5", marginBottom: 4, fontSize: 9, letterSpacing: "0.1em" }}>spec.responses:</div>
             <YamlLine label="caution:" indent={1} />
             <YamlLine label="burnRateThreshold:" value="2.0" indent={2}
